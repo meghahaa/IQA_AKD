@@ -11,6 +11,7 @@ from models.caf import CAF
 from models.regressor import QualityRegressor
 
 from training.losses import ScoreLoss
+from utils.metrics import IQAMetrics
 from utils.checkpoints import save_checkpoint
 
 
@@ -157,7 +158,7 @@ def train_teacher(
             mos  = batch["mos"].to(device)   # (B,)
 
             optimizer.zero_grad()
-            preds = model(ref, dist)         # (B, 1)
+            preds = model(ref, dist)         # (B,)
             loss  = criterion(preds, mos)
             loss.backward()
             optimizer.step()
@@ -171,12 +172,12 @@ def train_teacher(
         print(f"[Teacher] Train Loss: {avg_loss:.4f}")
 
         # Validation
-        plcc = validate_teacher(model, val_loader, device)
-        print(f"[Teacher] Validation PLCC: {plcc:.4f}")
+        metrics = validate_teacher(model, val_loader, device)
+        print(f"[Teacher] Validation PLCC: {metrics['plcc']:.4f}, SROCC: {metrics['srocc']:.4f}, RMSE: {metrics['rmse']:.4f}")
 
         # Checkpoint
-        if plcc > best_plcc:
-            best_plcc = plcc
+        if metrics['plcc'] > best_plcc:
+            best_plcc = metrics['plcc']
             save_checkpoint(
                 save_dir=save_dir,
                 filename="teacher_best.pth",
@@ -192,6 +193,7 @@ def train_teacher(
 # =========================================================
 
 def validate_teacher(model, val_loader, device):
+    """Validate teacher model using all metrics."""
     model.eval()
     preds_all, mos_all = [], []
 
@@ -201,16 +203,14 @@ def validate_teacher(model, val_loader, device):
             dist = batch["dist"].to(device)
             mos  = batch["mos"].to(device)
 
-            preds = model(ref, dist)         # (B, 1)
+            preds = model(ref, dist)  # (B,)
 
             preds_all.append(preds.cpu())
             mos_all.append(mos.cpu())
 
-    preds_all = torch.cat(preds_all).squeeze(1)  # (total_samples,)
-    mos_all   = torch.cat(mos_all)               # (total_samples,)
+    preds_all = torch.cat(preds_all)  # (total_samples,)
+    mos_all   = torch.cat(mos_all)    # (total_samples,)
 
-    plcc = torch.corrcoef(
-        torch.stack([preds_all, mos_all])
-    )[0, 1].item()
-
-    return plcc
+    # Use metrics module for consistency
+    metrics = IQAMetrics.compute_all_metrics(preds_all, mos_all, verbose=False)
+    return metrics

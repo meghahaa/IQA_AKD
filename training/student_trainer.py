@@ -11,6 +11,7 @@ from models.caf import CAF
 from models.regressor import QualityRegressor
 
 from training.losses import ScoreLoss, AKDLoss
+from utils.metrics import IQAMetrics
 from utils.checkpoints import save_checkpoint
 
 
