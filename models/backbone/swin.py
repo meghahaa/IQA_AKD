@@ -43,6 +43,7 @@ class SwinBackbone(nn.Module):
             features: list of 4 tensors corresponding to the 4 stages of Swin, each with shape [B*N, C_i, H_i, W_i]
         """
         features = self.backbone(x)
+        features = [f.permute(0,3,1,2) for f in features]  # [B*N, H, W, C] -> [B*N, C, H, W]
 
         if self.verbose:
             for i, f in enumerate(features):
