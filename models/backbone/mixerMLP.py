@@ -25,18 +25,12 @@ class MixerBlock(nn.Module):
         )
 
     def forward(self, x):
-        # x: [B, N, C]
-
-        # Token mixing
-        y=self.norm1(x)
-        y = y.transpose(1, 2)
-        y = self.token_mlp(y)
-        y = y.transpose(1, 2)
-        x = x + y
+        # x: (B, N, C)
+        # Token mixing — contiguous transpose avoids extra allocation
+        y = self.norm1(x).transpose(1, 2).contiguous()   # (B, C, N)
+        x = x + self.token_mlp(y).transpose(1, 2)        # (B, N, C)
 
         # Channel mixing
-        y=self.norm2(x)
-        y = self.channel_mlp(y)
-        x = x + y
+        x = x + self.channel_mlp(self.norm2(x))          # (B, N, C)
 
         return x

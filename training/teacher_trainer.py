@@ -34,8 +34,8 @@ class TeacherModel(nn.Module):
     def __init__(
         self,
         embed_dim=256,
-        mfde_depth=36,
-        cfi_depth=18,
+        mfde_depth=24,
+        cfi_depth=12,
         num_patches=10,
         verbose=False
     ):
@@ -95,12 +95,16 @@ class TeacherModel(nn.Module):
         #             (B*N, 192, 28, 28),
         #             (B*N, 384, 14, 14),
         #             (B*N, 768,  7,  7)]
-        ref_backbone  = self.backbone(ref)
-        dist_backbone = self.backbone(dist)
+        # 1 batched backbone call
+        both          = torch.cat([ref, dist], dim=0)   # (2*B*N, 3, 224, 224)
+        both_backbone = self.backbone(both)             # list of 4 × (2*B*N, C_i, H_i, W_i)
+        # ref_backbone  = [f[:B*N] for f in both_backbone]
+        #   dist_backbone = [f[B*N:] for f in both_backbone]
 
         # ── 3. MFR — project + pool → list of 4 × (B*N, 49, 256) ────────────
-        ref_feats  = self.mfr(ref_backbone)   # [(B*N, 49, 256)] × 4
-        dist_feats = self.mfr(dist_backbone)  # [(B*N, 49, 256)] × 4
+        both_feats  = self.mfr(both_backbone)           # list of 4 × (2*B*N, 49, 256)
+        ref_feats   = [f[:B*N] for f in both_feats]
+        dist_feats  = [f[B*N:] for f in both_feats]
 
         # ── 4. Difference first then concatenate → list of 4 × (B*N, 49, 256) ───────────────
         diff_feats = [r - d for r, d in zip(ref_feats, dist_feats)]  # [(B*N, 49, 256)] × 4

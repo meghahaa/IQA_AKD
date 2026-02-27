@@ -51,11 +51,11 @@ class MFDE(nn.Module):
                 f"embed_dim={embed_dim}"
             )
 
-    def forward(self, diff_feats):
+    def forward(self, diff_feats,store_selected_only=False):
         """
         Args:
             diff_feats: list of 4 tensors, each (B*N, 49, 256)
-                        — one per scale level, from MFR subtraction
+                        — one per scale level, from MFR subtractions
 
         Returns:
             final_feats:   list of 4 tensors, each (B*N, 49, 256)
@@ -68,40 +68,31 @@ class MFDE(nn.Module):
             f"[MFDE] Expected {self.num_levels} levels, got {len(diff_feats)}"
         )
 
-        final_feats   = []
-        intermediates = []   # [num_levels][depth]
+        BN   = diff_feats[0].shape[0]
+        L    = self.num_levels       # 4
+        N_tok = self.num_tokens_per_level  # 49
+        C    = self.embed_dim               # 256
 
-        for level_idx, x in enumerate(diff_feats):
-            # Validate shape
-            if x.dim() != 3:
-                raise ValueError(
-                    f"[MFDE] Level {level_idx}: expected 3D tensor "
-                    f"(B*N, {self.num_tokens_per_level}, {self.embed_dim}), "
-                    f"got shape {tuple(x.shape)}"
-                )
-            _, N, C = x.shape
-            if N != self.num_tokens_per_level or C != self.embed_dim:
-                raise ValueError(
-                    f"[MFDE] Level {level_idx}: shape mismatch. "
-                    f"Got (*, {N}, {C}), "
-                    f"expected (*, {self.num_tokens_per_level}, {self.embed_dim})"
-                )
+        x = torch.stack(diff_feats, dim=1).view(BN * L, N_tok, C)
 
-            level_intermediates = []
+        selected_indices = set(range(1, self.depth, 2))  # {1,3,5,...,35}
+    
+        # intermediates[level][paired_layer_k]
+        intermediates = [[] for _ in range(L)]
 
-            for layer_idx, block in enumerate(self.mixer_blocks):
-                x = block(x)                        # (B*N, 49, 256)
-                level_intermediates.append(x)
-
-                if self.verbose:
-                    print(
-                        f"[MFDE] Level {level_idx} | "
-                        f"Layer {layer_idx:>2d}/{self.depth} | "
-                        f"shape: {tuple(x.shape)}"
+        for layer_idx, block in enumerate(self.mixer_blocks):
+            x = block(x)
+            if store_selected_only and layer_idx in selected_indices:
+                # Split back to per-level and store
+                x_split = x.view(BN, L, N_tok, C)
+                for level_idx in range(L):
+                    intermediates[level_idx].append(
+                        x_split[:, level_idx].detach()     # (B*N, 49, 256)
                     )
 
-            final_feats.append(x)                   # (B*N, 49, 256)
-            intermediates.append(level_intermediates)
+        # Unstack levels
+        x = x.view(BN, L, N_tok, C)                       # (B*N, 4, 49, 256)
+        final_feats = [x[:, i] for i in range(L)]         # 4 × (B*N, 49, 256)
 
         return final_feats, intermediates
         # final_feats:   4 × (B*N, 49, 256)
