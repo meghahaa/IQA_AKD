@@ -55,8 +55,6 @@ class TeacherModel(nn.Module):
 
         # MFDE operates on concatenated diff tokens: 4 levels × 49 tokens = 196
         self.mfde = MFDE(
-            num_tokens=196,
-            embed_dim=embed_dim,
             depth=mfde_depth,      # 36 for teacher
             verbose=verbose
         )
