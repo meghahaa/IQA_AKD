@@ -40,23 +40,27 @@ class CAF(nn.Module):
     def forward(self, diff_feat, dist_feat):
         """
         Args:
-            diff_feat: Tensor [B*N, C] (difference-guided features)
-            dist_feat: Tensor [B*N, C] (distorted image features)
+            diff_feat: Tensor [B*N, N_tokens,C] (difference-guided features)
+            dist_feat: Tensor [B*N, N_tokens,C] (distorted image features)
 
         Returns:
-            fused_feat: Tensor [B*N, C]
+            fused_feat: Tensor [B*N, N_tokens, C]
         """
+        if self.verbose:
+            print(f"[CAF] Input diff_feat shape: {diff_feat.shape}")
+            print(f"[CAF] Input dist_feat shape: {dist_feat.shape}")
+            
         # Add dummy sequence dimension
-        q = self.q_proj(diff_feat).unsqueeze(1)   # [B*N, 1, C]
-        k = self.k_proj(diff_feat).unsqueeze(1)   # [B*N, 1, C]
-        v = self.v_proj(dist_feat).unsqueeze(1)   # [B*N, 1, C]
+        q = self.q_proj(diff_feat)
+        k = self.k_proj(diff_feat)
+        v = self.v_proj(dist_feat)
 
         # Scaled dot-product attention
         attn_scores = torch.matmul(q, k.transpose(-2, -1))
         attn_scores = attn_scores / (self.embed_dim ** 0.5)
         attn_weights = F.softmax(attn_scores, dim=-1)
 
-        attn_out = torch.matmul(attn_weights, v).squeeze(1)  # [B*N, C]
+        attn_out = torch.matmul(attn_weights, v)
 
         # Residual + normalization
         fused = self.out_proj(attn_out)

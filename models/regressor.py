@@ -11,7 +11,6 @@ class QualityRegressor(nn.Module):
     def __init__(
         self,
         embed_dim=256,
-        hidden_dim=128,
         verbose=False
     ):
         """
@@ -24,11 +23,7 @@ class QualityRegressor(nn.Module):
 
         self.verbose = verbose
 
-        self.mlp = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 1)
-        )
+        self.fc = nn.Linear(embed_dim, 1)
 
         if self.verbose:
             print("[Regressor] Initialized")
@@ -36,14 +31,21 @@ class QualityRegressor(nn.Module):
     def forward(self, x, num_patches):
         """
         Args:
-            x: Tensor [B*N, C]
-            num_patches: int (patches per image)
+            x: Tensor [B*N, N_tokens, C]
+            num_patches: int (patches per image) i.e N
 
         Returns:
             scores: Tensor [B]
         """
+        
+        # Global average pooling over tokens -> [B*N, C]
+        x = x.mean(dim=1)  
+
+        if self.verbose:
+            print(f"[Regressor] Input shape: {x.shape}")
+
         # Patch-wise prediction
-        patch_scores = self.mlp(x)  # [B*N, 1]
+        patch_scores = self.fc(x)  # [B*N, 1]
 
         # Reshape and aggregate
         B = patch_scores.shape[0] // num_patches

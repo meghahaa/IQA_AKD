@@ -40,7 +40,7 @@ class SwinBackbone(nn.Module):
             x: Tensor [B*N, 3, 224, 224]
 
         Returns:
-            features: list of 4 tensors
+            features: list of 4 tensors corresponding to the 4 stages of Swin, each with shape [B*N, C_i, H_i, W_i]
         """
         features = self.backbone(x)
 

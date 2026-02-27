@@ -1,40 +1,6 @@
 import torch
 import torch.nn as nn
-
-
-class MixerBlock(nn.Module):
-    """
-    Single MLP-Mixer block
-    """
-
-    def __init__(self, num_tokens, embed_dim, token_mlp_dim=512, channel_mlp_dim=2048):
-        super().__init__()
-
-        self.token_mlp = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(num_tokens, token_mlp_dim),
-            nn.GELU(),
-            nn.Linear(token_mlp_dim, num_tokens),
-        )
-
-        self.channel_mlp = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, channel_mlp_dim),
-            nn.GELU(),
-            nn.Linear(channel_mlp_dim, embed_dim),
-        )
-
-    def forward(self, x):
-        # x: [B, N, C]
-        y = x.transpose(1, 2)
-        y = self.token_mlp(y)
-        y = y.transpose(1, 2)
-        x = x + y
-
-        y = self.channel_mlp(x)
-        x = x + y
-
-        return x
+from .backbone.mixerMLP import MixerBlock
 
 class MFDE(nn.Module):
     """
@@ -44,6 +10,7 @@ class MFDE(nn.Module):
 
     def __init__(
         self,
+        num_tokens=196,  
         embed_dim=256,
         depth=18,
         token_mlp_dim=512,
@@ -52,6 +19,7 @@ class MFDE(nn.Module):
     ):
         """
         Args:
+            num_tokens (int): number of spatial tokens after flattening the 4 scales as well so 4x7x7=196
             embed_dim (int): feature dimension
             depth (int): number of mixer blocks
             verbose (bool): print debug info
@@ -63,7 +31,7 @@ class MFDE(nn.Module):
 
         self.mixer_blocks = nn.ModuleList([
             MixerBlock(
-                num_tokens=None,  # will be set dynamically
+                num_tokens=num_tokens,
                 embed_dim=embed_dim,
                 token_mlp_dim=token_mlp_dim,
                 channel_mlp_dim=channel_mlp_dim
@@ -77,23 +45,24 @@ class MFDE(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: Tensor [B*N, C, H, W]
+            x: Tensor of shape either
+               - [B*N, C, H, W] (spatial feature map), or
+               - [B*N, N_tokens, C] (flattened tokens from MFR)
 
         Returns:
             final_feature: [B*N, N_tokens, C]
-            intermediates: list of intermediate features
+            intermediates: list of intermediate features depth*[B*N, N_tokens, C]
         """
-        B, C, H, W = x.shape
-        N = H * W
+        # accept both 4D maps and 3D token sequences
+        if x.dim() == 4:
+            B, C, H, W = x.shape
+            N = H * W
+            x = x.view(B, C, N).permute(0, 2, 1)  # [B, N, C]
+        elif x.dim() == 3:
+            B, N, C = x.shape
+        else:
+            raise ValueError(f"Unexpected input shape {x.shape}; expected 3D or 4D tensor")
 
-        # Flatten spatial dimensions
-        x = x.view(B, C, N).permute(0, 2, 1)  # [B, N, C]
-
-        # Dynamically set token MLP input size (first forward)
-        for block in self.mixer_blocks:
-            if block.token_mlp[1].in_features is None:
-                block.token_mlp[1] = nn.Linear(N, block.token_mlp[1].out_features)
-                block.token_mlp[3] = nn.Linear(block.token_mlp[3].in_features, N)
 
         intermediates = []
 
