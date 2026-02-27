@@ -21,8 +21,8 @@ class MFDE(nn.Module):
         num_levels=4,
         embed_dim=256,
         depth=18,
-        token_mlp_dim=512,
-        channel_mlp_dim=2048,
+        token_mlp_dim=128,
+        channel_mlp_dim=512,
         verbose=False,
     ):
         super().__init__()

@@ -12,8 +12,8 @@ class CFI(nn.Module):
         num_tokens=196,
         embed_dim=256,
         depth=9,
-        mlp_dim=512,
-        channel_mlp_dim=2048,
+        mlp_dim=256,
+        channel_mlp_dim=512,
         verbose=False
     ):
         """
