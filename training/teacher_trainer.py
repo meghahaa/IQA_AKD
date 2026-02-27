@@ -101,15 +101,14 @@ class TeacherModel(nn.Module):
         ref_feats  = self.mfr(ref_backbone)   # [(B*N, 49, 256)] × 4
         dist_feats = self.mfr(dist_backbone)  # [(B*N, 49, 256)] × 4
 
-        # ── 4. Concatenate levels along token dim → (B*N, 196, 256) ──────────
-        ref_tokens  = torch.cat(ref_feats,  dim=1)  # (B*N, 196, 256)
+        # ── 4. Difference first then concatenate → list of 4 × (B*N, 49, 256) ───────────────
+        diff_feats = [r - d for r, d in zip(ref_feats, dist_feats)]  # [(B*N, 49, 256)] × 4
+
+        # ── 5. Concatenate levels along token dim → (B*N, 196, 256) ───────────────
         dist_tokens = torch.cat(dist_feats, dim=1)  # (B*N, 196, 256)
 
-        # ── 5. Difference tokens (Eq. 2) ─────────────────────────────────────
-        diff_tokens = ref_tokens - dist_tokens       # (B*N, 196, 256)
-
         # ── 6. MFDE on difference tokens ─────────────────────────────────────
-        f_diff_levels, _ = self.mfde(diff_tokens)
+        f_diff_levels, _ = self.mfde(diff_feats)
         # f_diff_levels: list of 4 × (B*N, 49, 256)
 
         # Concatenate levels → (B*N, 196, 256) for CAF
