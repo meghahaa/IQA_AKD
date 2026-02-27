@@ -94,6 +94,10 @@ class MFDE(nn.Module):
         x = x.view(BN, L, N_tok, C)                       # (B*N, 4, 49, 256)
         final_feats = [x[:, i] for i in range(L)]         # 4 × (B*N, 49, 256)
 
+        if self.verbose:
+            print(f"[MFDE] Final output shape: {final_feats[0].shape} per level")
+            print(f"[MFDE] Stored intermediates at layers: {sorted(selected_indices)}")
+            
         return final_feats, intermediates
         # final_feats:   4 × (B*N, 49, 256)
         # intermediates: 4 × depth × (B*N, 49, 256)
