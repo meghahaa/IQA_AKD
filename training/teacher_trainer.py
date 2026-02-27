@@ -111,8 +111,11 @@ class TeacherModel(nn.Module):
         diff_tokens = ref_tokens - dist_tokens       # (B*N, 196, 256)
 
         # ── 6. MFDE on difference tokens ─────────────────────────────────────
-        # Teacher doesn't use intermediates — underscore discards them
-        f_diff, _ = self.mfde(diff_tokens)           # (B*N, 196, 256)
+        f_diff_levels, _ = self.mfde(diff_tokens)
+        # f_diff_levels: list of 4 × (B*N, 49, 256)
+
+        # Concatenate levels → (B*N, 196, 256) for CAF
+        f_diff = torch.cat(f_diff_levels, dim=1)         # (B*N, 196, 256)        
 
         # ── 7. CFI on distortion tokens ──────────────────────────────────────
         f_dist = self.cfi(dist_tokens)               # (B*N, 196, 256)
