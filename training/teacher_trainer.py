@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 
 from models.backbone.swin import SwinBackbone
@@ -148,6 +149,7 @@ def train_teacher(
 ):
     model.to(device)
     criterion = ScoreLoss()
+    scaler    = GradScaler()
     best_plcc = -1e9
 
     for epoch in range(1, epochs + 1):
@@ -158,15 +160,17 @@ def train_teacher(
         loop = tqdm(train_loader, desc="Training")
 
         for i, batch in enumerate(loop):
-            ref  = batch["ref"].to(device)   # (B, N, 3, H, W)
-            dist = batch["dist"].to(device)  # (B, N, 3, H, W)
-            mos  = batch["mos"].to(device)   # (B,)
+            ref  = batch["ref"].to(device, non_blocking=True)   # (B, N, 3, H, W)
+            dist = batch["dist"].to(device, non_blocking=True)  # (B, N, 3, H, W)
+            mos  = batch["mos"].to(device, non_blocking=True)   # (B,)
 
-            optimizer.zero_grad()
-            preds = model(ref, dist)         # (B,)
-            loss  = criterion(preds, mos)
-            loss.backward()
-            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            with autocast():
+                preds = model(ref, dist)         # (B,)
+                loss  = criterion(preds, mos)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             epoch_loss += loss.item()
 
