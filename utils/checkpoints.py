@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn as nn
 
 
 def save_checkpoint(
@@ -13,23 +14,23 @@ def save_checkpoint(
 ):
     """
     Save training checkpoint.
-
-    Args:
-        save_dir (str): directory to save checkpoint
-        filename (str): checkpoint file name
-        model (nn.Module): model to save
-        optimizer (Optimizer): optimizer state
-        epoch (int): current epoch
-        best_metric (float, optional): best validation metric
-        verbose (bool): print status
+    Handles DataParallel wrapper automatically — always saves
+    the underlying model state dict without 'module.' prefix.
     """
     os.makedirs(save_dir, exist_ok=True)
 
+    # Unwrap DataParallel if present — saves clean state dict
+    model_state = (
+        model.module.state_dict()
+        if isinstance(model, nn.DataParallel)
+        else model.state_dict()
+    )
+
     checkpoint = {
-        "epoch": epoch,
-        "model_state": model.state_dict(),
+        "epoch":           epoch,
+        "model_state":     model_state,
         "optimizer_state": optimizer.state_dict(),
-        "best_metric": best_metric,
+        "best_metric":     best_metric,
     }
 
     path = os.path.join(save_dir, filename)
@@ -48,24 +49,21 @@ def load_checkpoint(
 ):
     """
     Load training checkpoint.
-
-    Args:
-        path (str): checkpoint path
-        model (nn.Module): model to load weights into
-        optimizer (Optimizer, optional): optimizer to restore
-        device (str): cpu or cuda
-        verbose (bool): print status
-
-    Returns:
-        start_epoch (int)
-        best_metric (float or None)
+    Works regardless of whether the model is currently wrapped
+    in DataParallel or not — checkpoint always stores clean keys.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
     checkpoint = torch.load(path, map_location=device)
 
-    model.load_state_dict(checkpoint["model_state"])
+    # Unwrap DataParallel before loading if present
+    target_model = (
+        model.module
+        if isinstance(model, nn.DataParallel)
+        else model
+    )
+    target_model.load_state_dict(checkpoint["model_state"])
 
     if optimizer is not None and "optimizer_state" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state"])
