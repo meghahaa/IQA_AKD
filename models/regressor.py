@@ -16,7 +16,6 @@ class QualityRegressor(nn.Module):
         """
         Args:
             embed_dim (int): input feature dimension
-            hidden_dim (int): hidden layer dimension
             verbose (bool): print debug info
         """
         super().__init__()

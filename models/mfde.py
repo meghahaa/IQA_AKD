@@ -33,20 +33,15 @@ class MFDE(nn.Module):
         self.depth = depth
         self.verbose = verbose
 
-        # One independent MixerBlock stack per level
-        # This ensures no parameter sharing between levels either,
-        # consistent with each level having distinct semantic meaning
-        self.level_mixers = nn.ModuleList([
-            nn.ModuleList([
-                MixerBlock(
-                    num_tokens=num_tokens_per_level,
-                    embed_dim=embed_dim,
-                    token_mlp_dim=token_mlp_dim,
-                    channel_mlp_dim=channel_mlp_dim,
-                )
-                for _ in range(depth)
-            ])
-            for _ in range(num_levels)
+        # Single shared stack — called once per level in forward()
+        self.mixer_blocks = nn.ModuleList([
+            MixerBlock(
+                num_tokens=num_tokens_per_level,
+                embed_dim=embed_dim,
+                token_mlp_dim=token_mlp_dim,
+                channel_mlp_dim=channel_mlp_dim,
+            )
+            for _ in range(depth)
         ])
 
         if self.verbose:
@@ -76,9 +71,7 @@ class MFDE(nn.Module):
         final_feats   = []
         intermediates = []   # [num_levels][depth]
 
-        for level_idx, (x, mixers) in enumerate(
-            zip(diff_feats, self.level_mixers)
-        ):
+        for level_idx, x in enumerate(diff_feats):
             # Validate shape
             if x.dim() != 3:
                 raise ValueError(
@@ -96,7 +89,7 @@ class MFDE(nn.Module):
 
             level_intermediates = []
 
-            for layer_idx, block in enumerate(mixers):
+            for layer_idx, block in enumerate(self.mixer_blocks):
                 x = block(x)                        # (B*N, 49, 256)
                 level_intermediates.append(x)
 
