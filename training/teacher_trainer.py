@@ -136,6 +136,7 @@ def train_teacher(
     train_loader,
     val_loader,
     optimizer,
+    scheduler,
     device,
     epochs,
     save_dir,
@@ -186,6 +187,11 @@ def train_teacher(
                 epoch=epoch,
                 best_metric=best_plcc
             )
+        
+        if scheduler is not None:
+            scheduler.step()
+    
+    print(f"\n[Teacher] Training complete. Best PLCC: {best_plcc:.4f}")
 
 
 # =========================================================
