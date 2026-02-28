@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 
 from models.backbone.swin import SwinBackbone
@@ -10,104 +10,137 @@ from models.cfi import CFI
 from models.caf import CAF
 from models.regressor import QualityRegressor
 
-from training.losses import ScoreLoss, AKDLoss
+from training.losses import ScoreLoss
 from utils.metrics import IQAMetrics
 from utils.checkpoints import save_checkpoint
 
-
-# =========================================================
-# Student Model
-# =========================================================
-
 class StudentModel(nn.Module):
     """
-    No-Reference IQA Student Model
+    No-Reference IQA Student Model (AKD-IQA)
+
+    Pipeline:
+        1. Flatten (B, N, 3, H, W) → (B*N, 3, H, W)
+        2. Batched backbone: [dist, redist] → 2 × 4 feature maps
+        3. MFR → 4 levels × (B*N, 49, 256) per branch
+        4. Diff tokens: redist - dist per level (pseudo-reference)
+           Note: redist is MORE degraded than dist, so redist-dist
+           gives a stable negative-direction difference signal
+        5. MFDE(diff per level) → f_diff: list 4 × (B*N, 49, 256)
+           + intermediates [4][depth] for AKD loss
+        6. CFI(dist_tokens concatenated) → f_dist: (B*N, 196, 256)
+        7. CAF(f_diff_cat, f_dist) → fused: (B*N, 196, 256)
+        8. Regressor → score: (B,)
     """
 
     def __init__(
         self,
         embed_dim=256,
-        mfde_depth=18,
-        num_scales=4,
+        mfde_depth=12,
+        cfi_depth=6,
         num_patches=10,
-        verbose=False
+        verbose=False,
     ):
         super().__init__()
 
-        self.verbose = verbose
+        self.verbose     = verbose
         self.num_patches = num_patches
 
-        self.backbone = SwinBackbone(pretrained=True)
+        # Shared backbone — same weights for dist and redist branches
+        self.backbone = SwinBackbone(pretrained=True, verbose=verbose)
+
         self.mfr = MultiScaleFeatureRepresentation(
-            in_channels=self.backbone.out_channels,
-            embed_dim=embed_dim
+            in_channels=self.backbone.out_channels,  # [96, 192, 384, 768]
+            embed_dim=embed_dim,
+            target_spatial_dim=7,
+            verbose=verbose,
         )
 
+        # Student MFDE: depth=18 (half of teacher's 36)
         self.mfde = MFDE(
             embed_dim=embed_dim,
-            depth=mfde_depth
+            depth=mfde_depth,
+            verbose=verbose,
         )
 
+        # Student CFI: depth=9 (half of teacher's 18)
         self.cfi = CFI(
-            num_scales=num_scales,
+            num_tokens=196,
             embed_dim=embed_dim,
-            depth=9
+            depth=cfi_depth,
+            verbose=verbose,
         )
 
-        self.caf = CAF(embed_dim=embed_dim)
-        self.regressor = QualityRegressor(embed_dim=embed_dim)
+        self.caf       = CAF(embed_dim=embed_dim, verbose=verbose)
+        self.regressor = QualityRegressor(embed_dim=embed_dim, verbose=verbose)
 
         if self.verbose:
-            print("[StudentModel] Initialized")
+            print(
+                f"[StudentModel] Initialized | "
+                f"mfde_depth={mfde_depth} | cfi_depth={cfi_depth}"
+            )
 
-    def forward(self, dist_patches, redist_patches, return_intermediate=False):
+    def forward(self, dist_patches, redist_patches, store_intermediates=False):
         """
         Args:
-            dist_patches:   [B, N, 3, H, W]
-            redist_patches: [B, N, 3, H, W]
-            return_intermediate (bool): return MFDE intermediates
+            dist_patches:        (B, N, 3, H, W)
+            redist_patches:      (B, N, 3, H, W)
+            store_intermediates: if True, return MFDE intermediates for AKD loss
+                                 set True during training, False during inference
 
         Returns:
-            score, intermediates (optional)
+            score:         (B,)
+            intermediates: [4][mfde_depth] each (B*N, 49, 256) — only if store_intermediates
         """
         B, N, C, H, W = dist_patches.shape
+        BN = B * N
 
-        dist = dist_patches.view(B * N, C, H, W)
-        redist = redist_patches.view(B * N, C, H, W)
+        # ── 1. Flatten ───────────────────────────────────────────────────────
+        dist   = dist_patches.view(BN, C, H, W)    # (B*N, 3, 224, 224)
+        redist = redist_patches.view(BN, C, H, W)  # (B*N, 3, 224, 224)
 
-        # Backbone + MFR
-        dist_feats = self.mfr(self.backbone(dist))
-        redist_feats = self.mfr(self.backbone(redist))
+        # ── 2. Batched backbone — 1 forward pass for both branches ───────────
+        both          = torch.cat([dist, redist], dim=0)   # (2*B*N, 3, 224, 224)
+        both_backbone = self.backbone(both)
+        # Split back: each is list of 4 × (B*N, C_i, H_i, W_i)
+        # dist_backbone  = [f[:BN] for f in both_backbone]
+        # redist_backbone = [f[BN:] for f in both_backbone]
 
-        # Pseudo difference
+        # ── 3. Batched MFR ───────────────────────────────────────────────────
+        both_mfr   = self.mfr(both_backbone)
+        # both_mfr: list of 4 × (2*B*N, 49, 256)
+        dist_feats  = [f[:BN] for f in both_mfr]   # 4 × (B*N, 49, 256)
+        redist_feats = [f[BN:] for f in both_mfr]  # 4 × (B*N, 49, 256)
+
+        # ── 4. Pseudo-difference tokens (redist - dist) ──────────────────────
         diff_feats = [r - d for r, d in zip(redist_feats, dist_feats)]
+        # 4 × (B*N, 49, 256)
 
-        # MFDE per scale
-        mfde_outs = []
-        mfde_intermediates = []
-
-        for feat in diff_feats:
-            out, inter = self.mfde(feat)
-            mfde_outs.append(out)
-            mfde_intermediates.append(inter)
-
-        # Cross-scale integration
-        diff_global = self.cfi(mfde_outs)
-
-        dist_global = self.cfi(
-            [f.flatten(2).transpose(1, 2) for f in dist_feats]
+        # ── 5. MFDE — per-level independent processing ───────────────────────
+        f_diff_levels, intermediates = self.mfde(
+            diff_feats,
+            store_selected_only=False,   # student stores ALL layers for KD
         )
+        # f_diff_levels: 4 × (B*N, 49, 256)
+        # intermediates: [4][mfde_depth] each (B*N, 49, 256)
 
-        fused = self.caf(diff_global, dist_global)
-        score = self.regressor(fused, self.num_patches)
+        # ── 6. CFI — cross-scale integration on dist tokens ──────────────────
+        dist_tokens = torch.cat(dist_feats, dim=1)  # (B*N, 196, 256)
+        f_dist      = self.cfi(dist_tokens)          # (B*N, 196, 256)
 
-        if return_intermediate:
-            return score, mfde_intermediates
-        return score
+        # ── 7. CAF — cross-attention fusion ──────────────────────────────────
+        f_diff = torch.cat(f_diff_levels, dim=1)    # (B*N, 196, 256)
+        fused  = self.caf(f_diff, f_dist)           # (B*N, 196, 256)
+
+        # ── 8. Regressor ─────────────────────────────────────────────────────
+        score = self.regressor(fused, N)             # (B,)
+
+        if store_intermediates:
+            return score, intermediates
+        return score, None
 
 
 # =========================================================
-# Student Training Function
+# Training Function
 # =========================================================
 
 def train_student(
@@ -116,144 +149,218 @@ def train_student(
     train_loader,
     val_loader,
     optimizer,
+    scheduler,
     device,
     epochs,
     save_dir,
-    print_freq=10
+    akd_loss_fn,
+    print_freq=10,
 ):
-    student.to(device)
-    teacher.to(device)
+    # Model already on device and optionally DataParallel-wrapped
+    # before being passed in
 
-    teacher.eval()  # freeze teacher
+    teacher.eval()
     for p in teacher.parameters():
         p.requires_grad = False
 
     score_loss_fn = ScoreLoss()
-    akd_loss_fn = AKDLoss(
-        num_student_layers=len(student.mfde.mixer_blocks),
-        num_teacher_layers=len(teacher.mfde.mixer_blocks),
-        verbose=False
-    )
+    akd_loss_fn   = akd_loss_fn.to(device)
 
+    scaler    = GradScaler()
     best_plcc = -1e9
 
     for epoch in range(1, epochs + 1):
         student.train()
-        epoch_loss = 0.0
+        epoch_loss       = 0.0
+        epoch_score_loss = 0.0
+        epoch_akd_loss   = 0.0
 
         print(f"\n[Student] Epoch {epoch}/{epochs}")
         loop = tqdm(train_loader, desc="Training")
 
         for i, batch in enumerate(loop):
-            dist = batch["dist"].to(device)
-            redist = batch["redist"].to(device)
-            mos = batch["mos"].to(device)
+            ref    = batch["ref"].to(device, non_blocking=True)     # (B, N, 3, H, W)
+            dist   = batch["dist"].to(device, non_blocking=True)    # (B, N, 3, H, W)
+            redist = batch["redist"].to(device, non_blocking=True)  # (B, N, 3, H, W)
+            mos    = batch["mos"].to(device, non_blocking=True)     # (B,)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
-            # -------- Teacher Forward --------
+            # ── Teacher forward (frozen, no grad) ────────────────────────────
+            # Teacher uses actual ref-dist difference (not redist)
             with torch.no_grad():
-                _, teacher_inter = teacher_forward_for_kd(
-                    teacher, dist, redist
+                teacher_intermediates = _teacher_forward_for_kd(
+                    teacher=teacher,
+                    ref_patches=ref,
+                    dist_patches=dist,
+                    device=device,
                 )
+                # teacher_intermediates: [4][num_student_layers] — pre-selected,
+                # detached, already on device
 
-            # -------- Student Forward --------
-            pred, student_inter = student(
-                dist, redist, return_intermediate=True
-            )
+            # ── Student forward ───────────────────────────────────────────────
+            with autocast():
+                pred, student_intermediates = student(
+                    dist_patches=dist,
+                    redist_patches=redist,
+                    store_intermediates=True,
+                )
+                # pred:                  (B,)
+                # student_intermediates: [4][mfde_depth]
 
-            # -------- Loss --------
-            l_score = score_loss_fn(pred, mos)
-            l_akd = akd_loss_fn(
-                flatten_intermediates(teacher_inter),
-                flatten_intermediates(student_inter)
-            )
+                # ── Losses ───────────────────────────────────────────────────
+                l_score = score_loss_fn(pred, mos)
+                l_akd   = akd_loss_fn(
+                    teacher_intermediates=teacher_intermediates,
+                    student_intermediates=student_intermediates,
+                )
+                loss = l_score + l_akd
 
-            loss = l_score + l_akd
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-            epoch_loss += loss.item()
+            epoch_loss       += loss.item()
+            epoch_score_loss += l_score.item()
+            epoch_akd_loss   += l_akd.item()
 
             if i % print_freq == 0:
                 loop.set_postfix(
-                    score=l_score.item(),
-                    akd=l_akd.item()
+                    total=f"{loss.item():.4f}",
+                    score=f"{l_score.item():.4f}",
+                    akd=f"{l_akd.item():.4f}",
                 )
 
-        avg_loss = epoch_loss / len(train_loader)
-        print(f"[Student] Train Loss: {avg_loss:.4f}")
+        n = len(train_loader)
+        print(
+            f"[Student] Epoch {epoch} | "
+            f"Total: {epoch_loss/n:.4f} | "
+            f"Score: {epoch_score_loss/n:.4f} | "
+            f"AKD: {epoch_akd_loss/n:.4f}"
+        )
 
-        # -------- Validation --------
-        plcc = validate_student(student, val_loader, device)
-        print(f"[Student] Validation PLCC: {plcc:.4f}")
+        # ── Validation ───────────────────────────────────────────────────────
+        metrics = validate_student(student, val_loader, device)
+        print(
+            f"[Student] Val | "
+            f"PLCC: {metrics['plcc']:.4f} | "
+            f"SROCC: {metrics['srocc']:.4f} | "
+            f"RMSE: {metrics['rmse']:.4f}"
+        )
 
-        # -------- Checkpoint --------
-        if plcc > best_plcc:
-            best_plcc = plcc
+        if epoch % 2 == 0:   # every epoch, adjust frequency as needed
+            weights = akd_loss_fn.get_effective_weights()
+            weight_str = " | ".join(
+                f"L{k}={v:.4f}" for k, v in weights.items()
+            )
+            print(f"[AKDLoss] Effective ω: {weight_str}")
+
+
+        if scheduler is not None:
+            scheduler.step()
+
+        # ── Checkpoint ───────────────────────────────────────────────────────
+        if metrics["plcc"] > best_plcc:
+            best_plcc = metrics["plcc"]
             save_checkpoint(
                 save_dir=save_dir,
                 filename="student_best.pth",
                 model=student,
                 optimizer=optimizer,
                 epoch=epoch,
-                best_metric=best_plcc
+                best_metric=best_plcc,
+                akd_loss_fn=akd_loss_fn,
             )
 
 
 # =========================================================
-# Helper Functions
+# Teacher KD Helper
 # =========================================================
 
-def teacher_forward_for_kd(teacher, dist, redist):
+def _teacher_forward_for_kd(teacher, ref_patches, dist_patches, device):
     """
-    Forward pass through teacher for KD features
-    """
-    B, N, C, H, W = dist.shape
-    ref = redist.view(B * N, C, H, W)
-    dist = dist.view(B * N, C, H, W)
+    Run teacher forward pass to collect pre-selected, detached
+    MFDE intermediates for AKD loss.
 
-    ref_feats = teacher.mfr(teacher.backbone(ref))
-    dist_feats = teacher.mfr(teacher.backbone(dist))
+    Teacher uses actual ref-dist difference (full-reference signal),
+    which is richer than the student's redist-dist pseudo-difference.
+    This is the knowledge being transferred.
+
+    Args:
+        teacher:      frozen TeacherModel (plain or DataParallel)
+        ref_patches:  (B, N, 3, H, W)
+        dist_patches: (B, N, 3, H, W)
+
+    Returns:
+        teacher_intermediates: [4][num_paired_layers]
+                               each (B*N, 49, 256), detached
+    """
+    B, N, C, H, W = dist_patches.shape
+    BN = B * N
+
+    ref  = ref_patches.view(BN, C, H, W)
+    dist = dist_patches.view(BN, C, H, W)
+
+    # Unwrap DataParallel to access submodules directly
+    t = teacher.module if isinstance(teacher, nn.DataParallel) else teacher
+
+    # Batched backbone
+    both          = torch.cat([ref, dist], dim=0)
+    both_backbone = t.backbone(both)
+    # ref_backbone  = [f[:BN] for f in both_backbone]
+    # dist_backbone = [f[BN:] for f in both_backbone]
+
+    # Batched MFR
+    both_mfr   = t.mfr(both_backbone)
+    ref_feats  = [f[:BN] for f in both_mfr]
+    dist_feats = [f[BN:] for f in both_mfr]
+
+    # Ref - dist difference (full-reference signal)
     diff_feats = [r - d for r, d in zip(ref_feats, dist_feats)]
 
-    mfde_inter = []
+    # MFDE with store_selected_only=True — returns only the paired layers, so half
+    # (every other layer starting from index 1) already detached
+    _, teacher_intermediates = t.mfde(
+        diff_feats,
+        store_selected_only=True,
+    )
+    # teacher_intermediates: [4][num_student_layers] — ready for AKDLoss
 
-    for feat in diff_feats:
-        _, inter = teacher.mfde(feat)
-        mfde_inter.append(inter)
-
-    return None, mfde_inter
+    return teacher_intermediates
 
 
-def flatten_intermediates(inter_list):
-    """
-    Convert per-scale intermediate lists into one flat list
-    """
-    flat = []
-    for scale in inter_list:
-        flat.extend(scale)
-    return flat
-
+# =========================================================
+# Validation
+# =========================================================
 
 def validate_student(model, val_loader, device):
+    """
+    Validate student model on val_loader.
+    Uses actual redist from batch — no dummy substitution.
+    Computes PLCC, SRCC, RMSE via IQAMetrics.
+    """
     model.eval()
-    preds_all, mos_all = [], []
+    preds_all = []
+    mos_all   = []
 
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Validating"):
-            dist = batch["dist"].to(device)
-            mos = batch["mos"].to(device)
+            dist   = batch["dist"].to(device, non_blocking=True)
+            redist = batch["redist"].to(device, non_blocking=True)
+            mos    = batch["mos"].to(device, non_blocking=True)
 
-            pred = model(dist, dist)  # dummy redist during test
+            with autocast():
+                pred, _ = model(
+                    dist_patches=dist,
+                    redist_patches=redist,
+                    store_intermediates=False,  # no KD needed at val time
+                )
+
             preds_all.append(pred.cpu())
             mos_all.append(mos.cpu())
 
-    preds_all = torch.cat(preds_all)
-    mos_all = torch.cat(mos_all)
+    preds_all = torch.cat(preds_all)  # (total_samples,)
+    mos_all   = torch.cat(mos_all)    # (total_samples,)
 
-    plcc = torch.corrcoef(
-        torch.stack([preds_all, mos_all])
-    )[0, 1].item()
-
-    return plcc
+    metrics = IQAMetrics.compute_all_metrics(preds_all, mos_all, verbose=False)
+    return metrics

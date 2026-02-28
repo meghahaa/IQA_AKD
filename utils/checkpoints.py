@@ -9,6 +9,7 @@ def save_checkpoint(
     model,
     optimizer,
     epoch,
+    akd_loss_fn=None,  # ← add this argument
     best_metric=None,
     verbose=True
 ):
@@ -26,10 +27,12 @@ def save_checkpoint(
         else model.state_dict()
     )
 
+    # But omega lives in akd_loss_fn, so save it separately:
     checkpoint = {
         "epoch":           epoch,
         "model_state":     model_state,
         "optimizer_state": optimizer.state_dict(),
+        "akd_loss_state":  akd_loss_fn.state_dict() if akd_loss_fn is not None else None,
         "best_metric":     best_metric,
     }
 
@@ -44,6 +47,7 @@ def load_checkpoint(
     path,
     model,
     optimizer=None,
+    akd_loss_fn=None,  # ← add this argument
     device="cpu",
     verbose=True
 ):
@@ -67,6 +71,9 @@ def load_checkpoint(
 
     if optimizer is not None and "optimizer_state" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state"])
+
+    if akd_loss_fn is not None and checkpoint["akd_loss_state"] is not None:
+        akd_loss_fn.load_state_dict(checkpoint["akd_loss_state"])
 
     start_epoch = checkpoint.get("epoch", 0)
     best_metric = checkpoint.get("best_metric", None)

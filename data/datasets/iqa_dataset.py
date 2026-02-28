@@ -1,5 +1,6 @@
 import os
 import random
+from turtle import mode
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
@@ -39,11 +40,11 @@ class IQADataset(Dataset):
             seed (int): random seed
             verbose (bool): print debug info
         """
-        assert mode in ["teacher", "student", "test"]
+        assert mode in ["teacher", "student", "test", "student_kd"]
 
         self.data = pd.read_csv(csv_file)
         self.root_dir = root_dir
-        self.mode = mode
+        self.mode = mode 
         self.patch_size = patch_size
         self.num_patches = num_patches
         self.training = training
@@ -135,4 +136,19 @@ class IQADataset(Dataset):
                 "dist": dist_patches,
                 "redist": redist_patches,
                 "mos": mos,
+            }
+        
+        if self.mode == "student_kd":
+            ref_path = os.path.join(self.root_dir, row["ref_path"])
+            ref_img  = self._load_image(ref_path)
+            ref_patches    = self._sample_patches(ref_img)
+        
+            redist_img     = self.redistorter(dist_img)
+            redist_patches = self._sample_patches(redist_img)
+        
+            return {
+                "ref":    ref_patches,    # (N, 3, H, W) — teacher needs this
+                "dist":   dist_patches,   # (N, 3, H, W) — shared
+                "redist": redist_patches, # (N, 3, H, W) — student needs this
+                "mos":    mos,
             }
