@@ -218,6 +218,20 @@ def train_student(
                 loss = l_score + l_akd
 
             scaler.scale(loss).backward()
+            if akd_loss_fn.verbose and i % 10 == 0:  # every 10 iterations to avoid spam
+                print(f"\n[Debug] omega_raw values: {akd_loss_fn.omega_raw.data}")
+                print(f"[Debug] omega_raw grad:   {akd_loss_fn.omega_raw.grad}")
+                print(f"[Debug] omega_raw requires_grad: {akd_loss_fn.omega_raw.requires_grad}")
+                print(f"[Debug] omega_raw device: {akd_loss_fn.omega_raw.device}")
+                
+                # Check if optimizer knows about omega_raw
+                param_ids_in_optimizer = {id(p) for group in optimizer.param_groups 
+                                        for p in group['params']}
+                print(f"[Debug] omega_raw in optimizer: {id(akd_loss_fn.omega_raw) in param_ids_in_optimizer}")
+                
+                # Check l_akd has grad_fn
+                print(f"[Debug] l_akd grad_fn: {l_akd.grad_fn}")
+                print(f"[Debug] l_score grad_fn: {l_score.grad_fn}")
             scaler.step(optimizer)
             scaler.update()
 
