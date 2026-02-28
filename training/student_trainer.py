@@ -280,11 +280,11 @@ def train_student(
         # ── Validation ───────────────────────────────────────────────────────
         metrics = validate_student(student, val_loader, device)
         plcc    = metrics["plcc"]
-        srcc    = metrics["srcc"]
+        srocc    = metrics["srocc"]
         print(
             f"[Student] Val | "
             f"PLCC: {plcc:.4f} | "
-            f"SRCC: {srcc:.4f} | "
+            f"SRCC: {srocc:.4f} | "
             f"RMSE: {metrics['rmse']:.4f}"
         )
 
@@ -301,7 +301,7 @@ def train_student(
             akd_loss=avg_akd,
             score_loss=avg_score,
             val_plcc=plcc,
-            val_srcc=srcc,
+            val_srcc=srocc,
         )
         plotter.save()   # overwrites same file — always up to date
 
