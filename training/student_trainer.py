@@ -217,6 +217,19 @@ def train_student(
                 )
                 loss = l_score + l_akd
 
+            
+            # scaler.step(optimizer)
+            # scaler.update()
+            scaler.scale(loss).backward()
+            
+            # Unscale first so clip operates on true gradient magnitudes
+            scaler.unscale_(optimizer)
+            
+            torch.nn.utils.clip_grad_norm_(
+                list(student.parameters()) + list(akd_loss_fn.parameters()),
+                max_norm=1.0,
+            )
+            
             if i % 10 == 0:  # every 10 iterations to avoid spam
                 print(f"\n[Debug] omega_raw values: {akd_loss_fn.omega_raw.data}")
                 print(f"[Debug] omega_raw grad:   {akd_loss_fn.omega_raw.grad}")
@@ -232,10 +245,7 @@ def train_student(
                 print(f"[Debug] l_akd grad_fn: {l_akd.grad_fn}")
                 print(f"[Debug] l_score grad_fn: {l_score.grad_fn}")
 
-            # scaler.step(optimizer)
-            # scaler.update()
-            scaler.scale(loss).backward()
-                        
+            
             scaler.step(optimizer)
             scaler.update()
 
