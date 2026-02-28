@@ -43,14 +43,14 @@ def evaluate_model(
                 ref  = batch["ref"].to(device, non_blocking=True)
                 dist = batch["dist"].to(device, non_blocking=True)
 
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast("cuda"):
                     preds = model(ref, dist)
 
             # ── Student / test mode (dist only) ───────────────────────
             else:
                 dist = batch["dist"].to(device, non_blocking=True)
 
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast("cuda"):
                     preds = model(dist)
 
             preds_all.append(preds.cpu())

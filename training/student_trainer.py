@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 from tqdm import tqdm
 
 from models.backbone.swin import SwinBackbone
@@ -189,17 +189,18 @@ def train_student(
             # ── Teacher forward (frozen, no grad) ────────────────────────────
             # Teacher uses actual ref-dist difference (not redist)
             with torch.no_grad():
-                teacher_intermediates = _teacher_forward_for_kd(
-                    teacher=teacher,
-                    ref_patches=ref,
-                    dist_patches=dist,
-                    device=device,
-                )
+                with torch.amp.autocast("cuda"):
+                    teacher_intermediates = _teacher_forward_for_kd(
+                        teacher=teacher,
+                        ref_patches=ref,
+                        dist_patches=dist,
+                        device=device,
+                    )
                 # teacher_intermediates: [4][num_student_layers] — pre-selected,
                 # detached, already on device
 
             # ── Student forward ───────────────────────────────────────────────
-            with autocast():
+            with torch.amp.autocast("cuda"):
                 pred, student_intermediates = student(
                     dist_patches=dist,
                     redist_patches=redist,
@@ -349,7 +350,7 @@ def validate_student(model, val_loader, device):
             redist = batch["redist"].to(device, non_blocking=True)
             mos    = batch["mos"].to(device, non_blocking=True)
 
-            with autocast():
+            with torch.amp.autocast("cuda"):
                 pred, _ = model(
                     dist_patches=dist,
                     redist_patches=redist,

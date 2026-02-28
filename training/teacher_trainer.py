@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 from tqdm import tqdm
 
 from models.backbone.swin import SwinBackbone
@@ -165,7 +165,7 @@ def train_teacher(
             mos  = batch["mos"].to(device, non_blocking=True)   # (B,)
 
             optimizer.zero_grad(set_to_none=True)
-            with autocast():
+            with torch.amp.autocast("cuda"):
                 preds = model(ref, dist)         # (B,)
                 loss  = criterion(preds, mos)
             scaler.scale(loss).backward()
