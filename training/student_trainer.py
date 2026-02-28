@@ -13,6 +13,8 @@ from models.regressor import QualityRegressor
 from training.losses import ScoreLoss
 from utils.metrics import IQAMetrics
 from utils.checkpoints import save_checkpoint
+from utils.plotting import TrainingPlotter
+
 
 class StudentModel(nn.Module):
     """
@@ -169,6 +171,8 @@ def train_student(
     scaler    = GradScaler()
     best_plcc = -1e9
 
+    plotter = TrainingPlotter(save_dir=save_dir)
+
     for epoch in range(1, epochs + 1):
         student.train()
         epoch_loss       = 0.0
@@ -260,30 +264,46 @@ def train_student(
                     akd=f"{l_akd.item():.4f}",
                 )
 
-        n = len(train_loader)
+        # ── End of epoch — compute averages ──────────────────────────────────
+        n          = len(train_loader)
+        avg_total  = epoch_loss       / n
+        avg_score  = epoch_score_loss / n
+        avg_akd    = epoch_akd_loss   / n
+
         print(
             f"[Student] Epoch {epoch} | "
-            f"Total: {epoch_loss/n:.4f} | "
-            f"Score: {epoch_score_loss/n:.4f} | "
-            f"AKD: {epoch_akd_loss/n:.4f}"
+            f"Avg Total Loss: {avg_total:.4f} | "
+            f"Avg Score Loss: {avg_score:.4f} | "
+            f"Avg AKD Loss: {avg_akd:.4f}"
         )
 
         # ── Validation ───────────────────────────────────────────────────────
         metrics = validate_student(student, val_loader, device)
+        plcc    = metrics["plcc"]
+        srcc    = metrics["srcc"]
         print(
             f"[Student] Val | "
-            f"PLCC: {metrics['plcc']:.4f} | "
-            f"SROCC: {metrics['srocc']:.4f} | "
+            f"PLCC: {plcc:.4f} | "
+            f"SRCC: {srcc:.4f} | "
             f"RMSE: {metrics['rmse']:.4f}"
         )
 
-        if epoch % 2 == 0:   # every epoch, adjust frequency as needed
-            weights = akd_loss_fn.get_effective_weights()
-            weight_str = " | ".join(
-                f"L{k}={v:.4f}" for k, v in weights.items()
-            )
-            print(f"[AKDLoss] Effective ω: {weight_str}")
+        if epoch % 5==0:
+        # ── Log omega weights ─────────────────────────────────────────────────
+            weights    = akd_loss_fn.get_effective_weights()
+            weight_str = " | ".join(f"L{k}={v:.4f}" for k, v in weights.items())
+            print(f"[AKDLoss] Epoch {epoch} ω: {weight_str}")
 
+        # ── Update plotter and save ───────────────────────────────────────────
+        plotter.update(
+            epoch=epoch,
+            total_loss=avg_total,
+            akd_loss=avg_akd,
+            score_loss=avg_score,
+            val_plcc=plcc,
+            val_srcc=srcc,
+        )
+        plotter.save()   # overwrites same file — always up to date
 
         if scheduler is not None:
             scheduler.step()
