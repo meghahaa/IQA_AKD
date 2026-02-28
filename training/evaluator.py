@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 from scipy import stats
-from utils.metrics import compute_plcc, compute_srcc
+from utils.metrics import compute_plcc, compute_srocc
 
 
 def evaluate_model(
@@ -64,20 +64,20 @@ def evaluate_model(
     plcc = compute_plcc(preds_all, mos_all)
 
     # SRCC — Spearman rank correlation
-    srcc = compute_srcc(preds_all, mos_all)
+    srocc = compute_srocc(preds_all, mos_all)
 
     if verbose:
         print(f"\n{'='*45}")
         print(f"  Evaluation Results — {split_name}")
         print(f"{'='*45}")
         print(f"  PLCC : {plcc:.4f}")
-        print(f"  SRCC : {srcc:.4f}")
+        print(f"  SROCC : {srocc:.4f}")
         print(f"  Samples evaluated: {len(preds_all)}")
         print(f"{'='*45}\n")
 
     return {
         "plcc":    plcc,
-        "srcc":    srcc,
+        "srocc":   srocc,
         "preds":   preds_all,
         "targets": mos_all,
     }
@@ -119,18 +119,18 @@ def evaluate_on_multiple_datasets(
     print(f"  {'-'*35}")
 
     plcc_vals = []
-    srcc_vals = []
+    srocc_vals = []
 
     for name, res in results.items():
         print(f"  {name:<15} {res['plcc']:>8.4f} {res['srcc']:>8.4f}")
         plcc_vals.append(res["plcc"])
-        srcc_vals.append(res["srcc"])
+        srocc_vals.append(res["srocc"])
 
     avg_plcc = sum(plcc_vals) / len(plcc_vals)
-    avg_srcc = sum(srcc_vals) / len(srcc_vals)
+    avg_srocc = sum(srocc_vals) / len(srocc_vals)
 
     print(f"  {'-'*35}")
-    print(f"  {'Average':<15} {avg_plcc:>8.4f} {avg_srcc:>8.4f}")
+    print(f"  {'Average':<15} {avg_plcc:>8.4f} {avg_srocc:>8.4f}")
     print(f"{'='*45}\n")
 
     return results
