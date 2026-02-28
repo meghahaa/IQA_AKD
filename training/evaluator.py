@@ -52,7 +52,7 @@ def evaluate_model(
                 redist = batch['redist'].to(device, non_blocking=True)
 
                 with torch.amp.autocast("cuda"):
-                    preds = model(dist, redist)
+                    preds,_ = model(dist, redist)
 
             preds_all.append(preds.cpu())
             mos_all.append(mos.cpu())
