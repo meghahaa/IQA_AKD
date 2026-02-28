@@ -55,7 +55,7 @@ def load_checkpoint(
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device,weights_only=False)
 
     # Unwrap DataParallel before loading if present
     target_model = (
