@@ -51,53 +51,62 @@ class MFDE(nn.Module):
                 f"embed_dim={embed_dim}"
             )
 
-    def forward(self, diff_feats,store_selected_only=False):
+    def forward(self, diff_feats, store_selected_only=False):
         """
         Args:
-            diff_feats: list of 4 tensors, each (B*N, 49, 256)
-                        — one per scale level, from MFR subtractions
+            diff_feats:          list of 4 × (B*N, 49, 256)
+            store_selected_only: True  → teacher mode: store only odd-indexed layers
+                                        (every other starting index 1) — the 
+                                        paired layers for KD. Stored detached.
+                                False → student mode: store ALL layers for KD.
+                                        Gradients preserved.
 
         Returns:
-            final_feats:   list of 4 tensors, each (B*N, 49, 256)
-                           — fed into CAF after concatenation
-            intermediates: list of 4 lists, each of length `depth`
-                           intermediates[level][layer] → (B*N, 49, 256)
-                           — used for per-level AKD loss (Eq. 11)
+            final_feats:   list of 4 × (B*N, 49, 256)
+            intermediates: [4][num_stored_layers] each (B*N, 49, 256)
+                        num_stored_layers = depth//2 if store_selected_only
+                                            = depth     if not store_selected_only
         """
         assert len(diff_feats) == self.num_levels, (
             f"[MFDE] Expected {self.num_levels} levels, got {len(diff_feats)}"
         )
 
-        BN   = diff_feats[0].shape[0]
-        L    = self.num_levels       # 4
+        BN    = diff_feats[0].shape[0]
+        L     = self.num_levels            # 4
         N_tok = self.num_tokens_per_level  # 49
-        C    = self.embed_dim               # 256
+        C     = self.embed_dim             # 256
 
+        # Stack all levels into batch dim → single CUDA pass per block
         x = torch.stack(diff_feats, dim=1).view(BN * L, N_tok, C)
+        # x: (B*N*4, 49, 256)
 
-        selected_indices = set(range(1, self.depth, 2))  # {1,3,5,...,35}
-    
-        # intermediates[level][paired_layer_k]
+        # Teacher: odd indices {1, 3, 5, ..., depth-1} — pairs with student 0..depth//2-1
+        selected_indices = set(range(1, self.depth, 2))
+
         intermediates = [[] for _ in range(L)]
 
         for layer_idx, block in enumerate(self.mixer_blocks):
             x = block(x)
-            if store_selected_only and layer_idx in selected_indices:
-                # Split back to per-level and store
-                x_split = x.view(BN, L, N_tok, C)
+
+            # Decide whether to store this layer
+            should_store = (
+                (store_selected_only and layer_idx in selected_indices)  # teacher
+                or
+                (not store_selected_only)                                 # student — store all
+            )
+
+            if should_store:
+                x_split = x.view(BN, L, N_tok, C)   # (B*N, 4, 49, 256)
                 for level_idx in range(L):
+                    feat = x_split[:, level_idx]      # (B*N, 49, 256)
                     intermediates[level_idx].append(
-                        x_split[:, level_idx].detach()     # (B*N, 49, 256)
+                        feat.detach() if store_selected_only else feat
+                        # teacher: detach — no grad needed, saves memory
+                        # student: keep grad — needed for backprop through KD loss
                     )
 
         # Unstack levels
-        x = x.view(BN, L, N_tok, C)                       # (B*N, 4, 49, 256)
-        final_feats = [x[:, i] for i in range(L)]         # 4 × (B*N, 49, 256)
+        x = x.view(BN, L, N_tok, C)                  # (B*N, 4, 49, 256)
+        final_feats = [x[:, i] for i in range(L)]    # 4 × (B*N, 49, 256)
 
-        if self.verbose:
-            print(f"[MFDE] Final output shape: {final_feats[0].shape} per level")
-            print(f"[MFDE] Stored intermediates at layers: {sorted(selected_indices)}")
-            
         return final_feats, intermediates
-        # final_feats:   4 × (B*N, 49, 256)
-        # intermediates: 4 × depth × (B*N, 49, 256)
