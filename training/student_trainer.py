@@ -227,10 +227,10 @@ def train_student(
             
             torch.nn.utils.clip_grad_norm_(
                 list(student.parameters()) + list(akd_loss_fn.parameters()),
-                max_norm=1.0,
+                max_norm=10.0,
             )
             
-            if i % 10 == 0:  # every 10 iterations to avoid spam
+            if akd_loss_fn.verbose and i % 10 == 0:  # every 10 iterations to avoid spam
                 print(f"\n[Debug] omega_raw values: {akd_loss_fn.omega_raw.data}")
                 print(f"[Debug] omega_raw grad:   {akd_loss_fn.omega_raw.grad}")
                 print(f"[Debug] omega_raw requires_grad: {akd_loss_fn.omega_raw.requires_grad}")

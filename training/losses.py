@@ -131,7 +131,6 @@ class AKDLoss(nn.Module):
                     f"level_loss={level_loss.item():.4f}"
                 )
 
-        loss = loss / self.num_levels
         return loss
 
     def get_effective_weights(self):
