@@ -235,15 +235,7 @@ def train_student(
             # scaler.step(optimizer)
             # scaler.update()
             scaler.scale(loss).backward()
-            
-            # Unscale first so clip operates on true gradient magnitudes
-            scaler.unscale_(optimizer)
-            
-            torch.nn.utils.clip_grad_norm_(
-                list(student.parameters()) + list(akd_loss_fn.parameters()),
-                max_norm=1.0,
-            )
-            
+                        
             scaler.step(optimizer)
             scaler.update()
 
