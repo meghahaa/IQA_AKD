@@ -378,6 +378,137 @@ def _teacher_forward_for_kd(teacher, ref_patches, dist_patches, device):
     return teacher_intermediates
 
 
+def train_student_no_kd(
+    student,
+    train_loader,
+    val_loader,
+    optimizer,
+    scheduler,
+    device,
+    epochs,
+    save_dir,
+    print_freq=10,
+):
+    """
+    Trains the student model WITHOUT knowledge distillation.
+
+    Identical to train_student in every way except:
+        - No teacher model
+        - No akd_loss_fn
+        - No teacher forward pass
+        - Loss = score loss only (L1 between pred and MOS)
+        - store_intermediates=False (no intermediates needed)
+        - Dataset mode should still be "student_kd" so redist is
+          available — the student still uses redist for its forward
+          pass, just without KD supervision on intermediates.
+
+    Use this as the ablation baseline:
+        train_student_no_kd  → student score only (no KD)
+        train_student        → student score + AKD loss (with KD)
+    Difference in PLCC/SRCC between the two = contribution of KD.
+    """
+
+    score_loss_fn = ScoreLoss()
+    scaler        = GradScaler()
+    best_plcc     = -1e9
+
+    # Separate plotter so curves don't overwrite the KD run
+    plotter = TrainingPlotter(save_dir=save_dir, filename="student_no_kd_curves.png")
+
+    for epoch in range(1, epochs + 1):
+        student.train()
+        epoch_loss       = 0.0
+        epoch_score_loss = 0.0
+
+        print(f"\n[Student-NoKD] Epoch {epoch}/{epochs}")
+        loop = tqdm(train_loader, desc="Training")
+
+        for i, batch in enumerate(loop):
+            # ref not needed — no teacher forward
+            dist   = batch["dist"].to(device, non_blocking=True)    # (B, N, 3, H, W)
+            redist = batch["redist"].to(device, non_blocking=True)  # (B, N, 3, H, W)
+            mos    = batch["mos"].to(device, non_blocking=True)     # (B,)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            # ── Student forward ───────────────────────────────────────────────
+            with torch.amp.autocast("cuda"):
+                pred, _ = student(
+                    dist_patches        = dist,
+                    redist_patches      = redist,
+                    store_intermediates = False,   # no KD — no need to store
+                )
+                # pred: (B,)
+
+                # ── Loss: score only ─────────────────────────────────────────
+                loss = score_loss_fn(pred, mos)
+
+            scaler.scale(loss).backward()
+
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                student.parameters(),
+                max_norm=10.0,
+            )
+
+            scaler.step(optimizer)
+            scaler.update()
+
+            epoch_loss       += loss.item()
+            epoch_score_loss += loss.item()
+
+            if i % print_freq == 0:
+                loop.set_postfix(score=f"{loss.item():.4f}")
+
+        # ── End of epoch ─────────────────────────────────────────────────────
+        n         = len(train_loader)
+        avg_total = epoch_loss       / n
+        avg_score = epoch_score_loss / n
+
+        print(
+            f"[Student-NoKD] Epoch {epoch} | "
+            f"Avg Score Loss: {avg_score:.4f}"
+        )
+
+        # ── Validation ───────────────────────────────────────────────────────
+        metrics = validate_student(student, val_loader, device)
+        plcc    = metrics["plcc"]
+        srcc    = metrics["srocc"]
+        print(
+            f"[Student-NoKD] Val | "
+            f"PLCC: {plcc:.4f} | "
+            f"SRCC: {srcc:.4f} | "
+            f"RMSE: {metrics['rmse']:.4f}"
+        )
+
+        # ── Plotter ───────────────────────────────────────────────────────────
+        # akd_loss=0.0 since there is none — keeps plotter API identical
+        plotter.update(
+            epoch      = epoch,
+            total_loss = avg_total,
+            akd_loss   = 0.0,
+            score_loss = avg_score,
+            val_plcc   = plcc,
+            val_srcc   = srcc,
+        )
+        plotter.save()
+
+        if scheduler is not None:
+            scheduler.step()
+
+        # ── Checkpoint ───────────────────────────────────────────────────────
+        if plcc > best_plcc:
+            best_plcc = plcc
+            save_checkpoint(
+                save_dir     = save_dir,
+                filename     = "student_no_kd_best.pth",
+                model        = student,
+                optimizer    = optimizer,
+                epoch        = epoch,
+                best_metric  = best_plcc,
+            )
+
+
 # =========================================================
 # Validation
 # =========================================================
